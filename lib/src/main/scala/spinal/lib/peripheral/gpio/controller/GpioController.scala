@@ -23,36 +23,59 @@
 ** OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR  **
 ** THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                **
 \*                                                                           */
-package spinal.lib.bus.amba3.apb
+
+package spinal.lib.peripheral.gpio.controller
 
 import spinal.core._
 import spinal.lib._
 import spinal.lib.io.{TriStateArray, TriState}
+import spinal.lib.bus.misc.{BusSlaveFactoryAddressWrapper, BusSlaveFactory}
+import spinal.lib.peripheral.gpio.{GpioParameter, GpioConfig}
 
 
-object Apb3Gpio{
-
-  def getApb3Config() = Apb3Config(addressWidth = 4,dataWidth = 32)
+case class GpioControllerStorage(gpioWidth: Int) extends Bundle {
+  val write = Bits(gpioWidth bits)
+  val writeEnable = Bits(gpioWidth bits)
 }
 
-
-/*
- * gpioRead  -> 0x00 Read only register to read the physical pin values
- * gpioWrite -> 0x04 Read-Write register to access the output values
- * gpioDirection -> 0x08 Read-Write register to set the GPIO pin directions. When set, the corresponding pin is set as output.
- **/
-
-case class Apb3Gpio(gpioWidth: Int) extends Component {
-
+class GpioController(parameter: GpioParameter) extends Component {
   val io = new Bundle {
-    val apb  = slave(Apb3(Apb3Gpio.getApb3Config()))
-    val gpio = master(TriStateArray(gpioWidth bits))
+    val storage = in(GpioControllerStorage(parameter.gpioWidth))
+    val gpio = master(TriStateArray(parameter.gpioWidth bits))
   }
 
-  val ctrl = Apb3SlaveFactory(io.apb)
+  io.gpio.writeEnable := io.storage.writeEnable
+  io.gpio.write := io.storage.write
 
-  ctrl.read(io.gpio.read, 0)
-  ctrl.driveAndRead(io.gpio.write, 4)
-  ctrl.driveAndRead(io.gpio.writeEnable, 8)
-  io.gpio.writeEnable.getDrivingReg init(0)
+  def driveFrom(
+    busCtrl: BusSlaveFactory,
+    parameter: GpioParameter,
+    config: GpioConfig,
+    baseAddress: Int = 0
+  ) = new Area {
+    require(busCtrl.busDataWidth == 16 || busCtrl.busDataWidth == 32)
+    val busCtrlWrapped = new BusSlaveFactoryAddressWrapper(busCtrl, baseAddress)
+ 
+    val gpioCtrlStorage = Reg(io.storage)
+    if (config.setDirection) {
+      if (config.directionAsOut) {
+        gpioCtrlStorage.writeEnable init(~0)
+      } else {
+        gpioCtrlStorage.writeEnable init(0)
+      }
+    }
+    if (config.setOutput) {
+      if (config.outputAsHigh) {
+        gpioCtrlStorage.write init(~0)
+      } else {
+        gpioCtrlStorage.write init(0)
+      }
+    }
+
+    busCtrlWrapped.read(io.gpio.read, 0x10)
+    busCtrlWrapped.readAndWrite(gpioCtrlStorage.write, 0x14)
+    busCtrlWrapped.readAndWrite(gpioCtrlStorage.writeEnable, 0x18)
+
+    io.storage := gpioCtrlStorage
+  }
 }
